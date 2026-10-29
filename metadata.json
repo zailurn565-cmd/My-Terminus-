@@ -1,0 +1,6 @@
+{
+  "name": "ForgeShell",
+  "description": "Production-grade SSH client, true-color xterm terminal emulator, SFTP file browser, and encrypted credential vault.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
