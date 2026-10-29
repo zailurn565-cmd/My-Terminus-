@@ -3,6 +3,7 @@ package com.example.services
 import android.util.Base64
 import com.example.models.AuthType
 import com.example.models.HostProfile
+import com.jcraft.jsch.ChannelExec
 import com.jcraft.jsch.ChannelSftp
 import com.jcraft.jsch.ChannelShell
 import com.jcraft.jsch.HostKey
@@ -356,6 +357,55 @@ class SshService {
             opened
         }
     }
+
+    suspend fun execCommand(command: String, timeoutSeconds: Int = 120): ExecResult =
+        withContext(Dispatchers.IO) {
+            val activeSession = session
+                ?: throw SshConnectException("SSH session is not connected")
+            if (!activeSession.isConnected) {
+                throw SshConnectException("SSH session is disconnected")
+            }
+            val channel = activeSession.openChannel("exec") as ChannelExec
+            val stdoutBytes = java.io.ByteArrayOutputStream()
+            val stderrBytes = java.io.ByteArrayOutputStream()
+            try {
+                channel.setCommand(command)
+                channel.inputStream = null
+                channel.setErrStream(stderrBytes)
+                val stdoutStream = channel.inputStream
+                channel.connect(timeoutSeconds.coerceIn(5, 300) * 1000)
+
+                val buf = ByteArray(4096)
+                val deadline = System.currentTimeMillis() + (timeoutSeconds.coerceIn(5, 300) * 1000L)
+                while (true) {
+                    while (stdoutStream.available() > 0) {
+                        val read = stdoutStream.read(buf, 0, buf.size)
+                        if (read < 0) break
+                        stdoutBytes.write(buf, 0, read)
+                    }
+                    if (channel.isClosed) {
+                        while (stdoutStream.available() > 0) {
+                            val read = stdoutStream.read(buf, 0, buf.size)
+                            if (read < 0) break
+                            stdoutBytes.write(buf, 0, read)
+                        }
+                        break
+                    }
+                    if (System.currentTimeMillis() > deadline) {
+                        break
+                    }
+                    delay(40L)
+                }
+
+                ExecResult(
+                    exitCode = channel.exitStatus,
+                    stdout = stdoutBytes.toString(Charsets.UTF_8.name()),
+                    stderr = stderrBytes.toString(Charsets.UTF_8.name())
+                )
+            } finally {
+                runCatching { channel.disconnect() }
+            }
+        }
 
     suspend fun disconnect() {
         withContext(Dispatchers.IO) {

@@ -1,13 +1,13 @@
 <resources>
     <string name="app_name">ForgeShell</string>
     <string name="empty_hosts_message">No hosts yet. Tap + to forge a connection.</string>
-    <string name="empty_hosts_subtitle">Store SSH profiles locally with hardware-backed encrypted credentials, true-color xterm emulation, and built-in SFTP.</string>
+    <string name="empty_hosts_subtitle">Store SSH profiles locally with hardware-backed encrypted credentials, automated zip + tmux deployment, and SFTP.</string>
     <string name="action_add_host">New Host</string>
     <string name="action_snippets">Snippets</string>
     <string name="action_settings">Settings</string>
     <string name="search_hosts_placeholder">Search hosts by label, IP, or user…</string>
     <string name="tab_terminal">Terminal</string>
-    <string name="tab_sftp">SFTP</string>
+    <string name="tab_sftp">Files</string>
     <string name="status_connected">Connected</string>
     <string name="status_connecting">Connecting...</string>
     <string name="status_disconnected">Disconnected</string>
@@ -21,4 +21,9 @@
     <string name="missing_credential_message">Credentials missing for this host. Please enter your password or private key.</string>
     <string name="cd_empty_illustration">ForgeShell copper terminal illustration</string>
     <string name="cd_back">Navigate back</string>
+    <string name="hub_title">VPS Control Hub</string>
+    <string name="hub_upload_title">Upload File</string>
+    <string name="hub_upload_subtitle">Choose existing or new folder, upload .zip, create tmux session &amp; auto-unzip</string>
+    <string name="hub_open_terminal_title">Open Terminal</string>
+    <string name="hub_open_terminal_subtitle">View &amp; attach to running tmux sessions or browse &amp; host VPS files</string>
 </resources>

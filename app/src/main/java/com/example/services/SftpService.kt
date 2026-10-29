@@ -122,6 +122,43 @@ class SftpService(private val sshService: SshService) {
         }
     }
 
+    suspend fun ensureDirectoryPath(fullRemotePath: String): String = withContext(Dispatchers.IO) {
+        val norm = normalizeRemotePath(fullRemotePath)
+        sshService.execCommand("mkdir -p ${VpsAutomationService.shellQuote(norm)}", 20)
+        norm
+    }
+
+    suspend fun readFilePreview(remotePath: String, maxBytes: Int = 65_536): String =
+        withContext(Dispatchers.IO) {
+            val channel = sshService.getOrOpenSftp()
+            val out = java.io.ByteArrayOutputStream()
+            synchronized(channel) {
+                channel.get(remotePath).use { stream ->
+                    val buffer = ByteArray(4096)
+                    var total = 0
+                    while (total < maxBytes) {
+                        val toRead = minOf(buffer.size, maxBytes - total)
+                        val count = stream.read(buffer, 0, toRead)
+                        if (count <= 0) break
+                        out.write(buffer, 0, count)
+                        total += count
+                    }
+                }
+            }
+            val bytes = out.toByteArray()
+            val hasNullByte = bytes.take(1024).any { it == 0.toByte() }
+            if (hasNullByte) {
+                "[Binary file — ${bytes.size} bytes read. Download to inspect locally or tap Run/Host if executable.]"
+            } else {
+                val decoded = String(bytes, Charsets.UTF_8)
+                if (bytes.size >= maxBytes) {
+                    "$decoded\n\n… [Preview truncated at ${maxBytes / 1024} KB]"
+                } else {
+                    decoded
+                }
+            }
+        }
+
     suspend fun renameEntry(oldPath: String, newName: String) = withContext(Dispatchers.IO) {
         val cleanName = newName.trim().trim('/')
         require(cleanName.isNotEmpty()) { "New name cannot be empty" }

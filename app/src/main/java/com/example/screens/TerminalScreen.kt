@@ -1,12 +1,16 @@
 package com.example.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -16,11 +20,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.WarningAmber
@@ -29,6 +37,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -44,7 +53,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -61,6 +72,7 @@ import com.example.providers.SettingsViewModel
 import com.example.providers.SnippetViewModel
 import com.example.providers.TerminalUiEvent
 import com.example.providers.TerminalViewModel
+import com.example.providers.VpsWorkflowStage
 import com.example.services.HostKeyPrompt
 import com.example.services.SshConnectionState
 import com.example.ui.theme.JetBrainsMonoFontFamily
@@ -85,12 +97,15 @@ fun TerminalScreen(
 ) {
     val connectionState by terminalViewModel.connectionState.collectAsStateWithLifecycle()
     val hostProfile by terminalViewModel.hostProfile.collectAsStateWithLifecycle()
-    val selectedTab by terminalViewModel.selectedTab.collectAsStateWithLifecycle()
+    val workflowStage by terminalViewModel.workflowStage.collectAsStateWithLifecycle()
     val snapshot by terminalViewModel.terminalSnapshot.collectAsStateWithLifecycle()
     val scrollbackOffset by terminalViewModel.scrollbackOffset.collectAsStateWithLifecycle()
     val ctrlSticky by terminalViewModel.ctrlSticky.collectAsStateWithLifecycle()
     val altSticky by terminalViewModel.altSticky.collectAsStateWithLifecycle()
     val hostKeyPrompt by terminalViewModel.activeHostKeyPrompt.collectAsStateWithLifecycle()
+    val activeTmuxSession by terminalViewModel.activeTmuxSessionName.collectAsStateWithLifecycle()
+    val activeProjectDir by terminalViewModel.activeProjectDirectory.collectAsStateWithLifecycle()
+    val runnableFiles by terminalViewModel.runnableProjectFiles.collectAsStateWithLifecycle()
 
     val allSnippets by snippetViewModel.snippets.collectAsStateWithLifecycle()
     val settings by settingsViewModel.settings.collectAsStateWithLifecycle()
@@ -99,9 +114,19 @@ fun TerminalScreen(
         allSnippets.filter { it.hostId == null || it.hostId == hostId }
     }
 
+    var showQuickRunDialog by remember { mutableStateOf(false) }
+
     val snackbarHostState = remember { SnackbarHostState() }
     val haptics = LocalHapticFeedback.current
     val clipboardManager = LocalClipboardManager.current
+
+    BackHandler {
+        val handled = terminalViewModel.handleWorkflowBack()
+        if (!handled) {
+            terminalViewModel.disconnectUserSession()
+            onNavigateBack()
+        }
+    }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -128,6 +153,9 @@ fun TerminalScreen(
         }
     }
 
+    val isWorkspaceView = workflowStage == VpsWorkflowStage.ACTIVE_TERMINAL ||
+        workflowStage == VpsWorkflowStage.FILE_EXPLORER
+
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -146,8 +174,11 @@ fun TerminalScreen(
                     ) {
                         IconButton(
                             onClick = {
-                                terminalViewModel.disconnectUserSession()
-                                onNavigateBack()
+                                val handled = terminalViewModel.handleWorkflowBack()
+                                if (!handled) {
+                                    terminalViewModel.disconnectUserSession()
+                                    onNavigateBack()
+                                }
                             },
                             modifier = Modifier.testTag("session_back_button")
                         ) {
@@ -159,15 +190,16 @@ fun TerminalScreen(
 
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = snapshot.windowTitle.ifBlank {
-                                    hostProfile?.label ?: "SSH Session"
-                                },
+                                text = hostProfile?.label ?: "VPS Session",
                                 style = MaterialTheme.typography.titleMedium,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = hostProfile?.connectionSummary ?: "",
+                                text = buildString {
+                                    append(hostProfile?.connectionSummary ?: "")
+                                    activeTmuxSession?.let { append(" • tmux:$it") }
+                                },
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontFamily = JetBrainsMonoFontFamily
                                 ),
@@ -177,9 +209,28 @@ fun TerminalScreen(
                             )
                         }
 
+                        if (isWorkspaceView && connectionState == SshConnectionState.CONNECTED) {
+                            FilledTonalButton(
+                                onClick = terminalViewModel::openHubHome,
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                modifier = Modifier
+                                    .defaultMinSize(minHeight = 40.dp)
+                                    .padding(end = 6.dp)
+                                    .testTag("return_to_vps_hub_btn")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Dashboard,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Hub", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+
                         SessionStatusBadge(state = connectionState)
 
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
 
                         when (connectionState) {
                             SshConnectionState.CONNECTED -> {
@@ -206,36 +257,38 @@ fun TerminalScreen(
                         }
                     }
 
-                    PrimaryTabRow(
-                        selectedTabIndex = selectedTab,
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer
-                    ) {
-                        Tab(
-                            selected = selectedTab == 0,
-                            onClick = { terminalViewModel.selectTab(0) },
-                            text = { Text(stringResource(R.string.tab_terminal)) },
-                            icon = {
-                                Icon(
-                                    Icons.Filled.Terminal,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            },
-                            modifier = Modifier.testTag("session_tab_terminal")
-                        )
-                        Tab(
-                            selected = selectedTab == 1,
-                            onClick = { terminalViewModel.selectTab(1) },
-                            text = { Text(stringResource(R.string.tab_sftp)) },
-                            icon = {
-                                Icon(
-                                    Icons.Filled.FolderOpen,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            },
-                            modifier = Modifier.testTag("session_tab_sftp")
-                        )
+                    if (isWorkspaceView) {
+                        PrimaryTabRow(
+                            selectedTabIndex = if (workflowStage == VpsWorkflowStage.ACTIVE_TERMINAL) 0 else 1,
+                            containerColor = MaterialTheme.colorScheme.surfaceContainer
+                        ) {
+                            Tab(
+                                selected = workflowStage == VpsWorkflowStage.ACTIVE_TERMINAL,
+                                onClick = terminalViewModel::openRawTerminalStage,
+                                text = { Text(stringResource(R.string.tab_terminal)) },
+                                icon = {
+                                    Icon(
+                                        Icons.Filled.Terminal,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                modifier = Modifier.testTag("session_tab_terminal")
+                            )
+                            Tab(
+                                selected = workflowStage == VpsWorkflowStage.FILE_EXPLORER,
+                                onClick = terminalViewModel::openFileExplorerStage,
+                                text = { Text(stringResource(R.string.tab_sftp)) },
+                                icon = {
+                                    Icon(
+                                        Icons.Filled.FolderOpen,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                modifier = Modifier.testTag("session_tab_sftp")
+                            )
+                        }
                     }
                 }
             }
@@ -248,54 +301,184 @@ fun TerminalScreen(
                 .imePadding()
                 .navigationBarsPadding()
         ) {
-            if (selectedTab == 0) {
-                Box(modifier = Modifier.weight(1f)) {
-                    XtermCanvasView(
-                        engine = terminalViewModel.terminalEngine,
-                        snapshot = snapshot,
-                        scrollbackOffset = scrollbackOffset,
-                        fontSizeSp = settings.terminalFontSize,
-                        fontFamilyName = settings.terminalFontFamily,
-                        cursorStyle = settings.cursorStyle,
-                        onTypedChar = terminalViewModel::sendTypedChar,
-                        onSendRaw = terminalViewModel::sendRawSequence,
-                        onPasteText = terminalViewModel::pasteText,
-                        onResizeGrid = terminalViewModel::onTerminalViewportResized,
-                        onScrollHistoryBy = terminalViewModel::scrollHistoryBy,
-                        onJumpToBottom = terminalViewModel::jumpToLiveBottom,
-                        onClearBuffer = terminalViewModel::clearTerminalBuffer
+            when (workflowStage) {
+                VpsWorkflowStage.ACTIVE_TERMINAL -> {
+                    if (connectionState == SshConnectionState.CONNECTED) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceContainerLow,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    text = activeProjectDir,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontFamily = JetBrainsMonoFontFamily
+                                    ),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                FilledTonalButton(
+                                    onClick = {
+                                        terminalViewModel.refreshRunnableFilesInActiveDir()
+                                        showQuickRunDialog = true
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                    modifier = Modifier
+                                        .defaultMinSize(minHeight = 38.dp)
+                                        .testTag("terminal_quick_run_host_btn")
+                                ) {
+                                    Icon(
+                                        Icons.Filled.PlayArrow,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Run / Host File", style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
+                        }
+                    }
+
+                    Box(modifier = Modifier.weight(1f)) {
+                        XtermCanvasView(
+                            engine = terminalViewModel.terminalEngine,
+                            snapshot = snapshot,
+                            scrollbackOffset = scrollbackOffset,
+                            fontSizeSp = settings.terminalFontSize,
+                            fontFamilyName = settings.terminalFontFamily,
+                            cursorStyle = settings.cursorStyle,
+                            onTypedChar = terminalViewModel::sendTypedChar,
+                            onSendRaw = terminalViewModel::sendRawSequence,
+                            onPasteText = terminalViewModel::pasteText,
+                            onResizeGrid = terminalViewModel::onTerminalViewportResized,
+                            onScrollHistoryBy = terminalViewModel::scrollHistoryBy,
+                            onJumpToBottom = terminalViewModel::jumpToLiveBottom,
+                            onClearBuffer = terminalViewModel::clearTerminalBuffer
+                        )
+                    }
+
+                    SnippetQuickBar(
+                        snippets = relevantSnippets,
+                        enabled = connectionState == SshConnectionState.CONNECTED,
+                        onRunSnippet = { snippet ->
+                            terminalViewModel.executeSnippetCommand(snippet.command)
+                        },
+                        onManageSnippets = onOpenSnippetsManager
+                    )
+
+                    KeyboardShortcutBar(
+                        ctrlActive = ctrlSticky,
+                        altActive = altSticky,
+                        onToggleCtrl = terminalViewModel::toggleCtrl,
+                        onToggleAlt = terminalViewModel::toggleAlt,
+                        onSendSequence = terminalViewModel::sendRawSequence,
+                        onPasteClipboard = {
+                            val text = clipboardManager.getText()?.text
+                            if (!text.isNullOrEmpty()) {
+                                terminalViewModel.pasteText(text)
+                            }
+                        }
                     )
                 }
 
-                SnippetQuickBar(
-                    snippets = relevantSnippets,
-                    enabled = connectionState == SshConnectionState.CONNECTED,
-                    onRunSnippet = { snippet ->
-                        terminalViewModel.executeSnippetCommand(snippet.command)
-                    },
-                    onManageSnippets = onOpenSnippetsManager
-                )
+                VpsWorkflowStage.FILE_EXPLORER -> {
+                    SftpScreen(
+                        terminalViewModel = terminalViewModel,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
 
-                KeyboardShortcutBar(
-                    ctrlActive = ctrlSticky,
-                    altActive = altSticky,
-                    onToggleCtrl = terminalViewModel::toggleCtrl,
-                    onToggleAlt = terminalViewModel::toggleAlt,
-                    onSendSequence = terminalViewModel::sendRawSequence,
-                    onPasteClipboard = {
-                        val text = clipboardManager.getText()?.text
-                        if (!text.isNullOrEmpty()) {
-                            terminalViewModel.pasteText(text)
-                        }
-                    }
-                )
-            } else {
-                SftpScreen(
-                    terminalViewModel = terminalViewModel,
-                    modifier = Modifier.weight(1f)
-                )
+                else -> {
+                    VpsWorkflowHub(
+                        stage = workflowStage,
+                        terminalViewModel = terminalViewModel,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
         }
+    }
+
+    if (showQuickRunDialog) {
+        AlertDialog(
+            onDismissRequest = { showQuickRunDialog = false },
+            title = { Text("Run / Host Script") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Auto-installs VPS requirements (--break-system-packages) and runs in tmux ($activeProjectDir):",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (runnableFiles.isEmpty()) {
+                        Text(
+                            text = "No .py, .js, or .sh scripts detected in $activeProjectDir. You can also browse all folders in the Files tab.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    } else {
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.height(220.dp)
+                        ) {
+                            items(runnableFiles, key = { it.fullPath }) { file ->
+                                Surface(
+                                    shape = MaterialTheme.shapes.small,
+                                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            showQuickRunDialog = false
+                                            terminalViewModel.runOrHostFile(file)
+                                        }
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(12.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.PlayArrow,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Text(
+                                            text = file.name,
+                                            style = MaterialTheme.typography.labelLarge.copy(
+                                                fontFamily = JetBrainsMonoFontFamily
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showQuickRunDialog = false
+                        terminalViewModel.openFileExplorerStage()
+                    }
+                ) {
+                    Text("Browse All Files")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showQuickRunDialog = false }) {
+                    Text("Close")
+                }
+            }
+        )
     }
 
     if (connectionState == SshConnectionState.CONNECTING && hostKeyPrompt == null) {

@@ -14,14 +14,17 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.CreateNewFolder
@@ -32,14 +35,17 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -76,6 +82,7 @@ fun SftpScreen(
     val entries by terminalViewModel.remoteEntries.collectAsStateWithLifecycle()
     val isLoading by terminalViewModel.isSftpLoading.collectAsStateWithLifecycle()
     val transferState by terminalViewModel.sftpTransfer.collectAsStateWithLifecycle()
+    val filePreview by terminalViewModel.filePreview.collectAsStateWithLifecycle()
 
     var pendingUploadTargetDir by remember { mutableStateOf<String?>(null) }
     var createFolderParentDir by remember { mutableStateOf<String?>(null) }
@@ -108,7 +115,7 @@ fun SftpScreen(
                 modifier = Modifier.padding(24.dp)
             ) {
                 Text(
-                    text = "Connect SSH session to browse remote SFTP files.",
+                    text = "Connect SSH session to browse remote VPS files.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -266,9 +273,11 @@ fun SftpScreen(
                                 if (entry.isDirectory) {
                                     terminalViewModel.navigateSftpTo(entry.fullPath)
                                 } else {
-                                    permissionsTarget = entry
+                                    terminalViewModel.openFilePreview(entry)
                                 }
                             },
+                            onRunOrHost = { terminalViewModel.runOrHostFile(entry) },
+                            onUnzipHere = { terminalViewModel.unzipRemoteArchiveInExplorer(entry) },
                             onDownload = { terminalViewModel.downloadRemoteFile(entry) },
                             onUploadIntoFolder = {
                                 pendingUploadTargetDir = entry.fullPath
@@ -289,6 +298,88 @@ fun SftpScreen(
                 }
             }
         }
+    }
+
+    filePreview?.let { preview ->
+        val entry = preview.entry
+        val isZip = entry.name.endsWith(".zip", ignoreCase = true)
+        AlertDialog(
+            onDismissRequest = terminalViewModel::dismissFilePreview,
+            title = {
+                Column {
+                    Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        text = entry.fullPath,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = JetBrainsMonoFontFamily
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (preview.isLoading) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(140.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator()
+                        }
+                    } else {
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = MaterialTheme.colorScheme.surfaceContainerLowest,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 100.dp, max = 320.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .verticalScroll(rememberScrollState())
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(12.dp)
+                            ) {
+                                Text(
+                                    text = preview.content.ifEmpty { "[Empty file]" },
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontFamily = JetBrainsMonoFontFamily
+                                    ),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                if (isZip) {
+                    Button(onClick = { terminalViewModel.unzipRemoteArchiveInExplorer(entry) }) {
+                        Icon(Icons.Filled.Archive, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Unzip Here")
+                    }
+                } else {
+                    Button(
+                        onClick = { terminalViewModel.runOrHostFile(entry) },
+                        modifier = Modifier.testTag("preview_run_host_btn")
+                    ) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Run / Host")
+                    }
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = terminalViewModel::dismissFilePreview) {
+                    Text("Close")
+                }
+            }
+        )
     }
 
     createFolderParentDir?.let { parentPath ->
@@ -499,6 +590,8 @@ private fun BreadcrumbBar(
 private fun SftpEntryRow(
     entry: RemoteFileEntry,
     onTap: () -> Unit,
+    onRunOrHost: () -> Unit,
+    onUnzipHere: () -> Unit,
     onDownload: () -> Unit,
     onUploadIntoFolder: () -> Unit,
     onCreateFolderInside: () -> Unit,
@@ -507,6 +600,8 @@ private fun SftpEntryRow(
     onDelete: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
+    val isRunnable = !entry.isDirectory && TerminalViewModel.isRunnableScriptName(entry.name)
+    val isZip = !entry.isDirectory && entry.name.endsWith(".zip", ignoreCase = true)
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -519,10 +614,11 @@ private fun SftpEntryRow(
             imageVector = when {
                 entry.isDirectory -> Icons.Filled.Folder
                 entry.isSymlink -> Icons.Filled.Link
+                isZip -> Icons.Filled.Archive
                 else -> Icons.AutoMirrored.Filled.InsertDriveFile
             },
             contentDescription = null,
-            tint = if (entry.isDirectory) {
+            tint = if (entry.isDirectory || isRunnable) {
                 MaterialTheme.colorScheme.primary
             } else {
                 MaterialTheme.colorScheme.onSurfaceVariant
@@ -562,6 +658,21 @@ private fun SftpEntryRow(
             )
         }
 
+        if (isRunnable) {
+            FilledTonalButton(
+                onClick = onRunOrHost,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                modifier = Modifier
+                    .defaultMinSize(minHeight = 40.dp)
+                    .padding(end = 4.dp)
+                    .testTag("run_host_row_${entry.name}")
+            ) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Host", style = MaterialTheme.typography.labelMedium)
+            }
+        }
+
         Box {
             IconButton(onClick = { menuExpanded = true }) {
                 Icon(
@@ -592,6 +703,32 @@ private fun SftpEntryRow(
                         }
                     )
                 } else {
+                    DropdownMenuItem(
+                        text = { Text("View File") },
+                        leadingIcon = { Icon(Icons.Filled.Visibility, contentDescription = null) },
+                        onClick = {
+                            menuExpanded = false
+                            onTap()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Run / Host (Auto-Deps)") },
+                        leadingIcon = { Icon(Icons.Filled.PlayArrow, contentDescription = null) },
+                        onClick = {
+                            menuExpanded = false
+                            onRunOrHost()
+                        }
+                    )
+                    if (isZip) {
+                        DropdownMenuItem(
+                            text = { Text("Unzip Archive Here") },
+                            leadingIcon = { Icon(Icons.Filled.Archive, contentDescription = null) },
+                            onClick = {
+                                menuExpanded = false
+                                onUnzipHere()
+                            }
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text("Download") },
                         leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null) },

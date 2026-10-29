@@ -1,9 +1,12 @@
 package com.example
 
+import com.example.providers.TerminalViewModel
 import com.example.services.SftpService
 import com.example.services.TerminalBufferEngine
+import com.example.services.VpsAutomationService
 import com.example.utils.Validators
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -14,13 +17,11 @@ class ExampleUnitTest {
     @Test
     fun terminalEngine_handlesTrueColorAndScrollbackLimit() {
         val engine = TerminalBufferEngine(initialCols = 40, initialRows = 5, maxScrollbackLines = 100)
-        // TrueColor foreground RGB(184, 115, 51) -> 0xFFB87333
         engine.feedLocalText("\u001b[38;2;184;115;51mForge\u001b[0m")
         val snap = engine.snapshot.value
         assertEquals('F', snap.visibleLines[0][0].char)
         assertEquals(0xFFB87333.toInt(), snap.visibleLines[0][0].fgArgb)
 
-        // Overflow scrollback beyond 100 lines
         repeat(130) { idx ->
             engine.feedLocalText("\r\nLine-$idx")
         }
@@ -55,5 +56,18 @@ class ExampleUnitTest {
         assertEquals("/var/log", SftpService.joinRemotePath("/var/", "log"))
         assertEquals("/var", SftpService.parentRemotePath("/var/log"))
         assertEquals("/", SftpService.parentRemotePath("/var"))
+    }
+
+    @Test
+    fun vpsAutomation_sanitizesTmuxNamesAndBuildsCommands() {
+        assertEquals("telegram-bot", VpsAutomationService.sanitizeSessionName("telegram bot.zip"))
+        assertEquals("vps-app", VpsAutomationService.sanitizeSessionName("..."))
+        val attachCmd = VpsAutomationService.buildAttachTmuxShellLine("my-bot", "/root/my-bot")
+        assertTrue(attachCmd.contains("tmux attach-session -t 'my-bot'"))
+        assertTrue(attachCmd.contains("cd '/root/my-bot'"))
+        assertTrue(TerminalViewModel.isRunnableScriptName("bot.py"))
+        assertTrue(TerminalViewModel.isRunnableScriptName("index.js"))
+        assertTrue(TerminalViewModel.isRunnableScriptName("start.sh"))
+        assertFalse(TerminalViewModel.isRunnableScriptName("archive.zip"))
     }
 }
